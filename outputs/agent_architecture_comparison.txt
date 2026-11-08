@@ -1,0 +1,32 @@
+REACT VS PLAN-AND-EXECUTE
+
+ReAct (Reason + Act) combines reasoning and tool execution
+in an iterative loop. The agent examines the latest tool
+result and decides what action to take next.
+
+Plan-and-Execute separates planning from execution. It
+first creates a sequence of steps and then executes that
+plan, potentially reducing repeated planning decisions.
+
+This project uses a ReAct-style workflow. The mock agent
+chooses tools based on the latest tool result.
+
+Measured model calls:
+S1 - 5 calls
+S5 - 3 calls
+S6 - 2 calls
+
+S1 required order lookup, policy search, refund calculation,
+refund issuance and a final response. S5 stopped after
+identifying a cancelled order. S6 stopped after the order
+lookup returned NOT_FOUND.
+
+ReAct handles unexpected tool results naturally. For example,
+a missing order stops processing, while a cancelled order
+is denied before refund calculation. However, iterative
+reasoning can consume more calls and may loop. The
+FALLBACK_MAX_ITERATIONS limit prevents indefinite execution.
+
+Plan-and-Execute may be more efficient for predictable,
+multi-step workflows, while ReAct is useful when the next
+action depends on intermediate tool results.

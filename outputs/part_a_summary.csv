@@ -1,0 +1,9 @@
+,value
+total_customers,1200.0
+total_products,40.0
+completed_orders,11110.0
+total_revenue,2998668.8
+mean_order_amount,269.91
+median_order_amount,135.0
+skewness,4.61
+upper_outliers,897.0
