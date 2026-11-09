@@ -101,15 +101,18 @@ def retrieve(query, k=3):
 from mock_llm import chat
 
 
-def answer_policy(query):
-    results = retrieve(query, k=3)
+def answer(question):
+    results = retrieve(question, k=3)
 
     if not results:
-        return (
-            "I could not find relevant information "
-            "in the policy documents. Please contact "
-            "human support."
-        )
+        return {
+            "answer": (
+                "I could not find relevant information "
+                "in the policy documents. Please contact "
+                "human support."
+            ),
+            "sources": []
+        }
 
     context = "\n".join(
         f"[{r['source']}] {r['text']}"
@@ -122,21 +125,30 @@ def answer_policy(query):
             "content": (
                 "You are a POLICY ASSISTANT. "
                 "Answer using only the supplied policy context. "
+                "Say you could not find the information otherwise. "
                 "Do not invent policy rules."
             )
         },
         {
             "role": "user",
             "content": (
-                f"CONTEXT:\n{context}\n\n"
-                f"QUESTION:\n{query}"
+                f"CONTEXT:\n{context}\n"
+                f"QUESTION:\n{question}"
             )
         }
     ]
 
     response = chat(messages)
 
-    return response.choices[0].message.content
+    return {
+        "answer": response.choices[0].message.content,
+        "sources": results
+    }
+
+
+def answer_policy(query):
+    return answer(query)["answer"]
+
 
 # RAG RETRIEVAL EVALUATION
 
@@ -172,7 +184,7 @@ def evaluate_retrieval(overlap=10):
     )
 
     document_hits = 0
-    fact_hits = 0
+    answer_fact_hits = 0
     fallback_hits = 0
     answerable_count = 0
     unanswerable_count = 0
@@ -181,7 +193,7 @@ def evaluate_retrieval(overlap=10):
 
         query = row["question"]
         expected_doc = row["expected_doc"]
-        expected_fact = row["expected_fact"]
+        expected_fact = str(row["expected_fact"])
 
         query_vector = evaluation_vectorizer.transform(
             [query]
@@ -202,18 +214,48 @@ def evaluate_retrieval(overlap=10):
                 for i in top_indices
             ]
 
+        if not retrieved:
+            generated_answer = (
+                "I could not find relevant information "
+                "in the policy documents. Please contact "
+                "human support."
+            )
+        else:
+            context = "\n".join(
+                f"[{chunk['source']}] {chunk['text']}"
+                for chunk in retrieved
+            )
+
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a POLICY ASSISTANT. "
+                        "Answer using only the supplied policy context. "
+                        "Say you could not find the information otherwise. "
+                        "Do not invent policy rules."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"CONTEXT:\n{context}\n"
+                        f"QUESTION:\n{query}"
+                    )
+                }
+            ]
+
+            response = chat(messages)
+            generated_answer = response.choices[0].message.content
+
         if expected_doc == "NONE":
             unanswerable_count += 1
 
-            if not retrieved:
+            if generated_answer.startswith("I could not find"):
                 fallback_hits += 1
 
         else:
             answerable_count += 1
-
-            retrieved_text = " ".join(
-                chunk["text"] for chunk in retrieved
-            )
 
             retrieved_sources = [
                 chunk["source"] for chunk in retrieved
@@ -222,8 +264,8 @@ def evaluate_retrieval(overlap=10):
             if expected_doc in retrieved_sources:
                 document_hits += 1
 
-            if str(expected_fact).lower() in retrieved_text.lower():
-                fact_hits += 1
+            if expected_fact in generated_answer:
+                answer_fact_hits += 1
 
     print("\nRETRIEVAL EVALUATION")
     print("Chunk overlap:", overlap)
@@ -239,8 +281,8 @@ def evaluate_retrieval(overlap=10):
     )
 
     print(
-        "Expected fact retrieved:",
-        fact_hits,
+        "Expected fact present in generated answer:",
+        answer_fact_hits,
         "/",
         answerable_count
     )

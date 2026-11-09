@@ -358,10 +358,41 @@ The retrieval system was evaluated using 14 questions: 12 answerable policy ques
 | Evaluation metric | 10-word overlap | Zero overlap |
 |---|---:|---:|
 | Expected document retrieved | 12/12 (100%) | 12/12 (100%) |
-| Expected fact retrieved | 12/12 (100%) | 11/12 (91.67%) |
+| Expected fact present in generated answer | 12/12 (100%) | 9/12 (75%) |
 | Correct unanswerable fallbacks | 2/2 (100%) | 2/2 (100%) |
 
-The 10-word overlap configuration retrieved all expected facts. Removing overlap reduced expected-fact retrieval by one question, demonstrating the benefit of overlapping chunks for this dataset.
+The evaluation checks the generated policy answer, not just the retrieved passages. With 10-word overlap, all 12 answerable questions contained their expected facts. Without overlap, only 9 of 12 generated answers contained the expected fact, even though the expected document was retrieved for all 12 questions. This demonstrates how chunk boundaries can affect the information available to the answer generator.
+
+### TF-IDF explanation
+
+TF-IDF (Term Frequency–Inverse Document Frequency) represents text using numerical word weights.
+
+- **TF (Term Frequency):** Measures how frequently a word appears in a document or text chunk.
+- **IDF (Inverse Document Frequency):** Gives greater weight to words that appear in fewer documents and lower weight to common words.
+- **TF-IDF:** Combines these measures to give each word a weight based on its frequency and distinctiveness.
+
+Cosine similarity compares the question vector with policy chunk vectors. The three highest-scoring chunks are retrieved.
+
+### Zero-overlap chunk-boundary example
+
+The question that failed with zero overlap was:
+
+"How soon is money returned when a payment fails but is deducted?"
+
+Expected fact: **48 hours**.
+
+In `payment_policy.txt`, the relevant sentence is:
+
+"If a payment fails but money is deducted, the amount is returned automatically within 48 hours."
+
+With 40-word chunks and zero overlap, the sentence was split across two chunks:
+
+- Chunk 1 ended with: "the amount is returned automatically"
+- Chunk 2 began with: "within 48 hours"
+
+In the earlier passage-level check, this question was one of the cases where the expected fact was not present in the top three retrieved chunks. The passage-level check achieved 11/12 without overlap. The updated end-to-end evaluation checks generated answers instead: it achieved 9/12 without overlap and 12/12 with 10-word overlap.
+
+This example demonstrates how chunk boundaries can separate related information and affect the context available to the answer generator.
 
 ### Support agent tools
 
