@@ -333,7 +333,7 @@ Outputs: `outputs/triage_results.csv` and `outputs/triage_budget_demo.csv`.
 
 These results are from the supplied simulated evaluation dataset, not a real-world production benchmark.
 
-## Part D 
+## Part D
 
 Scripts:
 - `policy_rag.py`
@@ -349,23 +349,23 @@ Five policy documents were loaded and divided into 40-word chunks with 10-word o
 - Top-3 policy passage retrieval
 - Fallback when no relevant policy match is found
 
-The implementation uses a lexical similarity threshold as a simple retrieval safeguard. It is not a calibrated semantic-confidence score.
+The implementation uses a lexical similarity threshold as a retrieval safeguard. It is not a calibrated semantic-confidence score.
 
 ### Retrieval evaluation
 
 The retrieval system was evaluated using 14 questions: 12 answerable policy questions and 2 unanswerable questions.
 
-| Evaluation metric              | 10-word overlap | Zero overlap   |
-|--------------------------------|-----------------|----------------|
-| Expected document retrieved    | 12/12 (100%)    | 12/12 (100%)   |
-| Expected fact retrieved        | 12/12 (100%)    | 11/12 (91.67%) |
-| Correct unanswerable fallbacks | 2/2 (100%)      | 2/2 (100%)     |
+| Evaluation metric | 10-word overlap | Zero overlap |
+|---|---:|---:|
+| Expected document retrieved | 12/12 (100%) | 12/12 (100%) |
+| Expected fact retrieved | 12/12 (100%) | 11/12 (91.67%) |
+| Correct unanswerable fallbacks | 2/2 (100%) | 2/2 (100%) |
 
 The 10-word overlap configuration retrieved all expected facts. Removing overlap reduced expected-fact retrieval by one question, demonstrating the benefit of overlapping chunks for this dataset.
 
 ### Support agent tools
 
-The agent uses five tools:
+The agent defines five tools in `TOOLS_SPEC` and maps them to their implementations through `TOOL_MAP`:
 
 1. `get_order`
 2. `search_policy`
@@ -380,52 +380,78 @@ The agent uses five tools:
 - Delivery taking 45 minutes or less receives no refund.
 - Refunds above ₹1,000 are escalated for human approval.
 
-### Checkpoint and recovery
+### Agent execution and checkpoint recovery
 
-The agent saves:
-- Run ID
-- Scenario ID
-- Full conversation messages
-- Token usage
-- Step number
-- Executed tools
+The agent uses a ReAct-style tool execution loop.
 
-An S1 crash was simulated after the second tool execution. The agent resumed from its checkpoint without repeating the completed tools.
+The `run_agent` interface supports:
+- `user_message`
+- `scenario_id`
+- `max_iterations` (default: 6)
+- `token_limit` (default: 6,000)
+- `time_limit_seconds` (default: 10)
+
+The agent records its conversation messages, token usage, step number and executed tool steps. Each tool step stores the tool name, arguments and observation.
+
+An S1 crash was simulated after the second tool execution. The agent resumed from its checkpoint without repeating completed tools. The recovered workflow executed `get_order`, `search_policy`, `calculate_refund` and `issue_refund` exactly once each.
 
 ### Scenario results
 
-| Scenario | Expected outcome | Actual outcome |
-|----------|------------------|----------------|
-| S1       | Refund ₹128.25   | Refund ₹128.25 |
-| S2       | Refund ₹135      | Refund ₹135    |
-| S3       | Escalate ₹1,999  | Escalated      |
-| S4       | Denied           | Denied         |
-| S5       | Denied           | Denied         |
-| S6       | Not found        | Not found      |
-| S7       | Fallback         | Fallback       |
+Results from the latest complete seven-scenario run:
 
-### Safety tests
+| Scenario | Actual status | Outcome | Model calls | Tokens |
+|---|---|---|---:|---:|
+| S1 | REFUND | ₹128.25 refund issued | 5 | 1,460 |
+| S2 | REFUND | ₹135 refund issued | 5 | 1,460 |
+| S3 | ESCALATE | ₹1,999 sent for human approval | 5 | 1,447 |
+| S4 | DENIED | Refund denied | 4 | 1,055 |
+| S5 | DENIED | Refund denied | 3 | 674 |
+| S6 | NOT_FOUND | Order not found | 2 | 291 |
+| S7 | FALLBACK_MAX_ITERATIONS | Safe fallback after six iterations | 6 | 3,666 |
 
-- Token-limit test: `TOKEN_LIMIT`
-- Timeout test: `TIMEOUT`
-- Fallback iteration limit: 5
+The run results are appended to `outputs/agent_runs.jsonl`. Each record includes the scenario ID, status, final answer, model-call count, token usage and detailed tool steps with arguments and observations.
 
-The token limit is checked after model calls, so a call can cause usage to exceed the configured threshold. It is a soft limit in this implementation.
+### Safety and fallback tests
+
+The agent includes three execution safeguards:
+
+- Maximum iteration limit: 6.
+- Token budget: checked before and after model calls. If the budget is exceeded after a call, execution stops before the next tool is executed.
+- Time limit: checked using a monotonic clock to avoid wall-clock adjustments affecting elapsed-time measurement.
+
+Additional tests were run using S1:
+
+| Test | Test configuration | Actual result |
+|---|---|---|
+| Token-limit fallback | `token_limit=200` | `FALLBACK_TOKEN_LIMIT` |
+| Timeout fallback | `time_limit_seconds=0` | `FALLBACK_TIMEOUT` |
+| Iteration fallback | Repeated tool-call scenario | `FALLBACK_MAX_ITERATIONS` |
+
+Both the token-limit and timeout tests returned safe messages directing the customer to human support.
 
 ### ReAct versus Plan-and-Execute
 
-The agent uses a ReAct-style workflow, selecting the next tool based on the latest tool result.
+ReAct (Reason + Act) combines reasoning and tool execution in an iterative loop. The agent examines the latest tool result and decides what action to take next.
 
-Measured model calls:
-- S1: 5
-- S5: 3
-- S6: 2
+Plan-and-Execute separates planning from execution. It first creates a sequence of steps and then executes that plan, potentially reducing repeated planning decisions.
 
-See `outputs/agent_architecture_comparison.txt` for the comparison.
+This project uses a ReAct-style workflow. The mock agent chooses tools based on the latest tool result.
 
-Run the scripts from the project root with the virtual environment activated.
+Measured results:
 
-**Note:** Some scripts regenerate data or append to JSONL output files. For a fresh complete run, use a clean copy of the project or back up and clear generated outputs and database files before rerunning the pipeline.
+| Scenario | Model calls | Tokens |
+|---|---:|---:|
+| S1 | 5 | 1,460 |
+| S5 | 3 | 674 |
+| S6 | 2 | 291 |
+
+S1 required order lookup, policy search, refund calculation, refund issuance and a final response. S5 stopped after identifying a cancelled order. S6 stopped after the order lookup returned NOT_FOUND.
+
+ReAct handles unexpected tool results naturally. For example, a missing order stops processing, while a cancelled order is denied before refund calculation. However, iterative reasoning can consume more calls and may loop. The six-iteration limit prevents indefinite execution.
+
+Plan-and-Execute may be more efficient for predictable, multi-step workflows, while ReAct is useful when the next action depends on intermediate tool results.
+
+See `outputs/agent_architecture_comparison.txt` for the architecture comparison.
 
 ## Limitations and Next Steps
 

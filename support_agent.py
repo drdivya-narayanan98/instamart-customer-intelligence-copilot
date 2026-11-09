@@ -16,9 +16,9 @@ OUTPUT_DIR = "outputs"
 os.makedirs(STATE_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-FALLBACK_MAX_ITERATIONS = 5
+FALLBACK_MAX_ITERATIONS = 6
 DEFAULT_TOKEN_LIMIT = 6000
-DEFAULT_TIMEOUT = 30
+DEFAULT_TIMEOUT = 10
 
 
 def get_order(order_id):
@@ -81,7 +81,7 @@ def calculate_refund(order_amount, delivery_minutes):
 
 def issue_refund(order_id, refund_inr):
     record = {
-        "action": "issued",
+        "tool_name": "issue_refund",
         "order_id": order_id,
         "refund_inr": round(float(refund_inr), 2),
         "timestamp": datetime.now().isoformat()
@@ -90,15 +90,12 @@ def issue_refund(order_id, refund_inr):
     with open("outputs/refund_ledger.jsonl", "a") as file:
         file.write(json.dumps(record) + "\n")
 
-    return {
-        "status": "issued",
-        "refund_inr": record["refund_inr"]
-    }
+    return {"refund_inr": record["refund_inr"]}
 
 
 def escalate_to_human(order_id, refund_inr):
     record = {
-        "action": "escalated",
+        "tool_name": "escalate_to_human",
         "order_id": order_id,
         "refund_inr": round(float(refund_inr), 2),
         "timestamp": datetime.now().isoformat()
@@ -107,35 +104,30 @@ def escalate_to_human(order_id, refund_inr):
     with open("outputs/refund_ledger.jsonl", "a") as file:
         file.write(json.dumps(record) + "\n")
 
-    return {
-        "status": "escalated",
-        "refund_inr": record["refund_inr"]
-    }
+    return {"refund_inr": record["refund_inr"]}
 
+
+TOOL_MAP = {
+    "get_order": get_order,
+    "search_policy": search_policy,
+    "calculate_refund": calculate_refund,
+    "issue_refund": issue_refund,
+    "escalate_to_human": escalate_to_human
+}
 
 def execute_tool(tool_name, arguments):
     if isinstance(arguments, str):
         arguments = json.loads(arguments)
 
-    if tool_name == "get_order":
-        return get_order(**arguments)
+    tool = TOOL_MAP.get(tool_name)
 
-    elif tool_name == "search_policy":
-        return search_policy(**arguments)
+    if tool is None:
+        return {"error": "UNKNOWN_TOOL"}
 
-    elif tool_name == "calculate_refund":
-        return calculate_refund(**arguments)
-
-    elif tool_name == "issue_refund":
-        return issue_refund(**arguments)
-
-    elif tool_name == "escalate_to_human":
-        return escalate_to_human(**arguments)
-
-    return {"error": "UNKNOWN_TOOL"}
+    return tool(**arguments)
 
 
-TOOLS = [
+TOOLS_SPEC = [
     {
         "type": "function",
         "function": {
@@ -223,7 +215,7 @@ def save_checkpoint(state):
 
 
 SYSTEM_PROMPT = """
-You are an Instamart customer support agent.
+You are an Instamart customer support AGENT.
 
 Follow these rules:
 
@@ -255,11 +247,12 @@ def load_checkpoint(run_id):
     
 
 def run_agent(
+    user_message,
     scenario_id,
-    customer_id,
-    message,
-    token_limit=DEFAULT_TOKEN_LIMIT,
-    time_limit_seconds=DEFAULT_TIMEOUT,
+    max_iterations=6,
+    token_limit=6000,
+    time_limit_seconds=10,
+    customer_id=None,
     crash_after_tool=None
 ):
     run_id = str(uuid.uuid4())
@@ -270,15 +263,16 @@ def run_agent(
         "customer_id": customer_id,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": message}
+            {"role": "user", "content": user_message}
         ],
         "tokens_used": 0,
         "llm_calls": 0,
         "step_number": 0,
         "tools_executed": [],
+        "steps": [],
         "status": "running",
         "final_answer": None,
-        "started_at": time.time()
+        "started_at": time.monotonic()
     }
 
     save_checkpoint(state)
@@ -287,29 +281,39 @@ def run_agent(
         state,
         token_limit,
         time_limit_seconds,
-        crash_after_tool
+        crash_after_tool,
+        max_iterations
     )
 
 def continue_agent(
     state,
-    token_limit=DEFAULT_TOKEN_LIMIT,
-    time_limit_seconds=DEFAULT_TIMEOUT,
-    crash_after_tool=None
+    token_limit=6000,
+    time_limit_seconds=10,
+    crash_after_tool=None,
+    max_iterations=6
 ):
-    start_time = state.get("started_at", time.time())
+    start_time = state.get("started_at", time.monotonic())
 
-    while state["step_number"] < FALLBACK_MAX_ITERATIONS:
+    while state["step_number"] < max_iterations:
 
-        if time.time() - start_time >= time_limit_seconds:
-            state["status"] = "TIMEOUT"
+        if time.monotonic() - start_time >= time_limit_seconds:
+            state["status"] = "FALLBACK_TIMEOUT"
+            state["final_answer"] = (
+                "FALLBACK_TIMEOUT: time limit reached. "
+                "Please contact human support."
+            )
             break
 
         if state["tokens_used"] >= token_limit:
-            state["status"] = "TOKEN_LIMIT"
+            state["status"] = "FALLBACK_TOKEN_LIMIT"
+            state["final_answer"] = (
+                "FALLBACK_TOKEN_LIMIT: token budget exceeded. "
+                "Please contact human support."
+            )
             break
 
         try:
-            response = chat(state["messages"], tools=TOOLS)
+            response = chat(state["messages"], tools=TOOLS_SPEC)
         except Exception as error:
             state["status"] = "ERROR"
             state["final_answer"] = str(error)
@@ -319,13 +323,38 @@ def continue_agent(
         state["tokens_used"] += response.usage.total_tokens
         state["step_number"] += 1
 
+        if state["tokens_used"] > token_limit:
+            state["status"] = "FALLBACK_TOKEN_LIMIT"
+            state["final_answer"] = (
+                "FALLBACK_TOKEN_LIMIT: token budget exceeded. "
+                "Please contact human support."
+            )
+            break
+
         assistant_message = response.choices[0].message
         tool_calls = assistant_message.tool_calls
 
         if not tool_calls:
-            state["final_answer"] = assistant_message.content
-            state["status"] = "completed"
+            state["final_answer"] = assistant_message.content or ""
+            state["status"] = (
+                state["final_answer"].split(":", 1)[0].strip()
+                if ":" in state["final_answer"]
+                else "ERROR"
+            )
             break
+
+        state["messages"].append({
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": call.id,
+                    "name": call.name,
+                    "arguments": call.arguments
+                }
+                for call in tool_calls
+            ]
+        })
 
         for tool_call in tool_calls:
             tool_name = tool_call.name
@@ -334,9 +363,15 @@ def continue_agent(
             result = execute_tool(tool_name, arguments)
 
             state["tools_executed"].append(tool_name)
+            state["steps"].append({
+                "tool_name": tool_name,
+                "arguments": arguments,
+                "observation": result
+            })
 
             state["messages"].append({
                 "role": "tool",
+                "tool_call_id": tool_call.id,
                 "name": tool_name,
                 "content": json.dumps(result)
             })
@@ -352,9 +387,9 @@ def continue_agent(
                 return state
 
     if state["status"] == "running":
-        state["status"] = "FALLBACK"
+        state["status"] = "FALLBACK_MAX_ITERATIONS"
         state["final_answer"] = (
-            "FALLBACK: maximum agent iterations reached. "
+            "FALLBACK_MAX_ITERATIONS: maximum agent iterations reached. "
             "Please contact human support."
         )
 
@@ -371,7 +406,6 @@ def resume_agent(run_id):
         )
 
     state["status"] = "running"
-    state["started_at"] = time.time()
 
     save_checkpoint(state)
 
@@ -390,7 +424,7 @@ def save_run_result(state):
         "final_answer": state["final_answer"],
         "llm_calls": state["llm_calls"],
         "tokens_used": state["tokens_used"],
-        "steps": state["step_number"],
+        "steps": state["steps"],
         "tools_executed": state["tools_executed"]
     }
 
@@ -412,7 +446,7 @@ def run_all_scenarios():
         state = run_agent(
             scenario_id=scenario["scenario_id"],
             customer_id=scenario["customer_id"],
-            message=scenario["message"],
+            user_message=scenario["message"],
             crash_after_tool=(
                 2 if scenario["scenario_id"] == "S1" else None
             )
