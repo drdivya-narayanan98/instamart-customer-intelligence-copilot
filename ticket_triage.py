@@ -199,32 +199,47 @@ Return only valid JSON.
 """
 
 
-def classify_ticket(text, prompt):
+def classify_ticket(text, prompt, ticket_id="TEST"):
     messages = [
         {"role": "system", "content": prompt},
         {"role": "user", "content": text}
     ]
 
+    allowed_categories = {
+        "billing", "delivery", "technical", "fraud"
+    }
+
     for attempt in range(4):
         try:
             response = chat(messages)
+            response_text = response.choices[0].message.content
+            tokens_used = response.usage.total_tokens
 
-            result = json.loads(
-                response.choices[0].message.content
-            )
+            try:
+                result = json.loads(response_text)
 
-            category = result.get("category")
+                category = result.get("category")
 
-            if category not in {
-                "billing", "delivery", "technical", "fraud"
-            }:
-                return None
+                if category in allowed_categories:
+                    return category, "classified_json", tokens_used
 
-            return category
+                return None, "flagged_invalid_output", tokens_used
+
+            except (json.JSONDecodeError, AttributeError, TypeError):
+                words = set(
+                    re.findall(r"[a-z]+", response_text.lower())
+                )
+
+                matches = words.intersection(allowed_categories)
+
+                if len(matches) == 1:
+                    return matches.pop(), "classified_keyword", tokens_used
+
+                return None, "flagged_invalid_output", tokens_used
 
         except TransientLLMError:
             if attempt == 3:
-                return None
+                return None, "flagged_invalid_output", 0
 
             base_delay = 0.05 * (2 ** attempt)
 
@@ -233,12 +248,14 @@ def classify_ticket(text, prompt):
                 base_delay * 1.15
             )
 
+            print(
+                f"Retry: ticket {ticket_id}, retry number {attempt + 1}, "
+                f"wait {delay:.4f} seconds"
+            )
+
             time.sleep(delay)
 
-        except (json.JSONDecodeError, AttributeError, TypeError):
-            return None
-
-    return None
+    return None, "flagged_invalid_output", 0
 
 
 # Test zero-shot classification on one ticket
@@ -310,20 +327,13 @@ def process_tickets(prompt, token_budget=100000):
         else:
             estimated_cost = est_tokens(prompt) + est_tokens(text)
 
-            if total_tokens + estimated_cost > token_budget:
+            if total_tokens >= token_budget:
                 status = "budget_exhausted"
 
             else:
-                category = classify_ticket(text, prompt)
+                category, status, tokens_used = classify_ticket(text, prompt, ticket_id)
 
-                tokens_used = estimated_cost
                 total_tokens += tokens_used
-
-                status = (
-                    "classified"
-                    if category is not None
-                    else "flagged_invalid_output"
-                )
 
         results.append({
             "ticket_id": ticket_id,
@@ -344,7 +354,7 @@ zero_shot_results, zero_shot_tokens = process_tickets(
 
 print("\nZERO-SHOT RESULTS")
 print(zero_shot_results["status"].value_counts())
-print("Estimated tokens used:", zero_shot_tokens)
+print("Actual tokens used:", zero_shot_tokens)
 
 # Calculate accuracy using successfully classified tickets
 zero_shot_check = zero_shot_results.merge(
@@ -353,7 +363,10 @@ zero_shot_check = zero_shot_results.merge(
 )
 
 valid_zero_shot = zero_shot_check[
-    zero_shot_check["status"] == "classified"
+    zero_shot_check["status"].isin([
+        "classified_json",
+        "classified_keyword"
+    ])
 ]
 
 accuracy = (
@@ -362,6 +375,28 @@ accuracy = (
 ).mean() * 100
 
 print("Zero-shot accuracy:", round(accuracy, 2), "%")
+
+zero_shot_classified_count = len(valid_zero_shot)
+
+print(
+    "Tokens per classified ticket:",
+    round(zero_shot_tokens / zero_shot_classified_count, 2)
+)
+
+from sklearn.metrics import confusion_matrix
+
+print("\nZERO-SHOT CONFUSION MATRIX")
+print(
+    pd.DataFrame(
+        confusion_matrix(
+            valid_zero_shot["true_category"],
+            valid_zero_shot["category"],
+            labels=["billing", "delivery", "technical", "fraud"]
+        ),
+        index=["Actual billing", "Actual delivery", "Actual technical", "Actual fraud"],
+        columns=["Pred billing", "Pred delivery", "Pred technical", "Pred fraud"]
+    )
+)
 
 
 # Run few-shot classification
@@ -372,7 +407,7 @@ few_shot_results, few_shot_tokens = process_tickets(
 
 print("\nFEW-SHOT RESULTS")
 print(few_shot_results["status"].value_counts())
-print("Estimated tokens used:", few_shot_tokens)
+print("Actual tokens used:", few_shot_tokens)
 
 few_shot_check = few_shot_results.merge(
     tickets[["ticket_id", "true_category"]],
@@ -380,7 +415,10 @@ few_shot_check = few_shot_results.merge(
 )
 
 valid_few_shot = few_shot_check[
-    few_shot_check["status"] == "classified"
+    few_shot_check["status"].isin([
+        "classified_json",
+        "classified_keyword"
+    ])
 ]
 
 few_shot_accuracy = (
@@ -389,6 +427,26 @@ few_shot_accuracy = (
 ).mean() * 100
 
 print("Few-shot accuracy:", round(few_shot_accuracy, 2), "%")
+
+print("\nFEW-SHOT CONFUSION MATRIX")
+print(
+    pd.DataFrame(
+        confusion_matrix(
+            valid_few_shot["true_category"],
+            valid_few_shot["category"],
+            labels=["billing", "delivery", "technical", "fraud"]
+        ),
+        index=["Actual billing", "Actual delivery", "Actual technical", "Actual fraud"],
+        columns=["Pred billing", "Pred delivery", "Pred technical", "Pred fraud"]
+    )
+)
+
+few_shot_classified_count = len(valid_few_shot)
+
+print(
+    "Tokens per classified ticket:",
+    round(few_shot_tokens / few_shot_classified_count, 2)
+)
 
 # Add customer segment information
 few_shot_results = few_shot_results.merge(
@@ -403,7 +461,10 @@ few_shot_results["is_premium"] = (
 
 def assign_route(row):
 
-    if row["status"] != "classified":
+    if row["status"] not in [
+    "classified_json",
+    "classified_keyword"
+    ]:
         return "human_review", "NORMAL"
 
     if row["category"] == "fraud":
@@ -459,8 +520,8 @@ print(final_results.head(10).to_string(index=False))
 # Demonstrate token budget protection
 
 budget_demo, budget_tokens = process_tickets(
-    FEW_SHOT_PROMPT,
-    token_budget=500
+    ZERO_SHOT_PROMPT,
+    token_budget=6000
 )
 
 budget_demo.to_csv(

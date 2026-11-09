@@ -1,3 +1,4 @@
+import pandas as pd
 import os
 import re
 import numpy as np
@@ -136,3 +137,124 @@ def answer_policy(query):
     response = chat(messages)
 
     return response.choices[0].message.content
+
+# RAG RETRIEVAL EVALUATION
+
+def evaluate_retrieval(overlap=10):
+
+    evaluation_chunks = []
+
+    for document in documents:
+        document_chunks = chunk_text(
+            document["text"],
+            chunk_size=40,
+            overlap=overlap
+        )
+
+        for chunk in document_chunks:
+            evaluation_chunks.append({
+                "source": document["source"],
+                "text": chunk
+            })
+
+    evaluation_vectorizer = TfidfVectorizer(
+        stop_words="english"
+    )
+
+    texts = [
+        chunk["text"] for chunk in evaluation_chunks
+    ]
+
+    matrix = evaluation_vectorizer.fit_transform(texts)
+
+    evaluation_data = pd.read_csv(
+        "data/raw/policy_eval.csv"
+    )
+
+    document_hits = 0
+    fact_hits = 0
+    fallback_hits = 0
+    answerable_count = 0
+    unanswerable_count = 0
+
+    for _, row in evaluation_data.iterrows():
+
+        query = row["question"]
+        expected_doc = row["expected_doc"]
+        expected_fact = row["expected_fact"]
+
+        query_vector = evaluation_vectorizer.transform(
+            [query]
+        )
+
+        scores = cosine_similarity(
+            query_vector,
+            matrix
+        ).flatten()
+
+        if scores.max() < 0.10:
+            retrieved = []
+        else:
+            top_indices = np.argsort(scores)[::-1][:3]
+
+            retrieved = [
+                evaluation_chunks[i]
+                for i in top_indices
+            ]
+
+        if expected_doc == "NONE":
+            unanswerable_count += 1
+
+            if not retrieved:
+                fallback_hits += 1
+
+        else:
+            answerable_count += 1
+
+            retrieved_text = " ".join(
+                chunk["text"] for chunk in retrieved
+            )
+
+            retrieved_sources = [
+                chunk["source"] for chunk in retrieved
+            ]
+
+            if expected_doc in retrieved_sources:
+                document_hits += 1
+
+            if str(expected_fact).lower() in retrieved_text.lower():
+                fact_hits += 1
+
+    print("\nRETRIEVAL EVALUATION")
+    print("Chunk overlap:", overlap)
+    print("Total questions:", len(evaluation_data))
+    print("Answerable questions:", answerable_count)
+    print("Unanswerable questions:", unanswerable_count)
+
+    print(
+        "Expected document retrieved:",
+        document_hits,
+        "/",
+        answerable_count
+    )
+
+    print(
+        "Expected fact retrieved:",
+        fact_hits,
+        "/",
+        answerable_count
+    )
+
+    print(
+        "Correct unanswerable fallbacks:",
+        fallback_hits,
+        "/",
+        unanswerable_count
+    )
+
+
+print("\nEVALUATION WITH 10-WORD OVERLAP")
+evaluate_retrieval(overlap=10)
+
+print("\nEVALUATION WITH ZERO OVERLAP")
+evaluate_retrieval(overlap=0)
