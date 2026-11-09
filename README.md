@@ -425,19 +425,6 @@ See `outputs/agent_architecture_comparison.txt` for the comparison.
 
 Run the scripts from the project root with the virtual environment activated.
 
-```bash
-python audit_raw.py
-python audit_quality.py
-python clean_data.py
-python build_database.py
-python validate_data.py
-python pandas_analysis.py
-python customer_segmentation.py
-python lapse_prediction.py
-python ticket_triage.py
-python support_agent.py
-```
-
 **Note:** Some scripts regenerate data or append to JSONL output files. For a fresh complete run, use a clean copy of the project or back up and clear generated outputs and database files before rerunning the pipeline.
 
 ## Limitations and Next Steps
