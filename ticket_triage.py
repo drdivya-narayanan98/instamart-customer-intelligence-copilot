@@ -111,6 +111,10 @@ print(
     email_remaining + phone_remaining + order_id_remaining == 0
 )
 
+assert (
+    email_remaining + phone_remaining + order_id_remaining == 0
+), "PII detected after redaction!"
+
 # Zero-shot classification prompt
 ZERO_SHOT_SYSTEM = """
 CLASSIFY the customer support ticket.

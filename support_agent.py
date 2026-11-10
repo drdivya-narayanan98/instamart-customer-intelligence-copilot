@@ -37,7 +37,7 @@ def get_order(order_id):
     conn.close()
 
     if row is None:
-        return {"error": "NOT_FOUND"}
+        return {"error": "order not found"}
 
     return {
         "order_id": row[0],

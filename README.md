@@ -256,6 +256,7 @@ Script: `ticket_triage.py`
 | Remaining order ID patterns | 0      |
 
 All detected PII patterns were removed before classification.
+The script asserts that zero email, phone and order ID patterns remain after redaction. If any are detected, execution stops with an assertion error.
 
 ### Classification results
 
@@ -332,6 +333,7 @@ The budget is checked before each model call. A final call can take the running 
 Outputs: `outputs/triage_results.csv` and `outputs/triage_budget_demo.csv`.
 
 These results are from the supplied simulated evaluation dataset, not a real-world production benchmark.
+The reported accuracy reflects the supplied mock LLM and synthetic ticket labels. It should not be interpreted as expected accuracy on real customer conversations.
 
 ## Part D
 
